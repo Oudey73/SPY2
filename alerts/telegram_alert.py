@@ -2,6 +2,7 @@
 Telegram Alert System
 Sends trading opportunity alerts via Telegram bot
 """
+import html
 import requests
 from datetime import datetime
 from typing import Optional, Dict
@@ -125,13 +126,13 @@ class TelegramAlertSystem:
         if hasattr(opportunity, 'vix_filter_passed'):
             vix_status = "✅ VIX Filter Passed" if opportunity.vix_filter_passed else "⚠️ VIX Filter Warning"
 
-        # Top drivers
-        drivers_text = "\n".join([f"  • {d}" for d in opportunity.top_drivers[:3]])
+        # Top drivers (escape HTML entities like < >)
+        drivers_text = "\n".join([f"  • {html.escape(d)}" for d in opportunity.top_drivers[:3]])
 
         # Warnings
         warnings_text = ""
         if opportunity.warnings:
-            warnings_text = "\n\n⚠️ <b>Warnings:</b>\n" + "\n".join([f"  • {w}" for w in opportunity.warnings])
+            warnings_text = "\n\n⚠️ <b>Warnings:</b>\n" + "\n".join([f"  • {html.escape(w)}" for w in opportunity.warnings])
 
         opp_id = getattr(opportunity, 'opp_id', '')
         id_line = f"\n🆔 <b>ID:</b> {opp_id}" if opp_id else ""
@@ -225,10 +226,10 @@ class TelegramAlertSystem:
 ❌ <b>Stop Loss:</b> {trade_plan.stop_loss_pct:.0f}% of max loss
 
 📈 <b>Top Drivers:</b>
-""" + "\n".join([f"  • {d}" for d in opportunity.top_drivers[:3]])
+""" + "\n".join([f"  • {html.escape(d)}" for d in opportunity.top_drivers[:3]])
 
         if opportunity.warnings:
-            message += "\n\n⚠️ <b>Warnings:</b>\n" + "\n".join([f"  • {w}" for w in opportunity.warnings])
+            message += "\n\n⚠️ <b>Warnings:</b>\n" + "\n".join([f"  • {html.escape(w)}" for w in opportunity.warnings])
 
         message += f"\n\n⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
         message += "\n\n<i>⚠️ Not financial advice. DYOR.</i>"
