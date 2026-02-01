@@ -1,0 +1,30 @@
+# SPY Opportunity Agent - Dependencies
+
+# Data Sources
+yfinance>=0.2.36          # Yahoo Finance (free)
+polygon-api-client>=1.12  # Polygon.io (real-time)
+requests>=2.31.0          # HTTP requests
+aiohttp>=3.9.0            # Async HTTP
+
+# Data Processing
+pandas>=2.1.0
+numpy>=1.24.0
+
+# Technical Analysis
+ta>=0.11.0                # Technical analysis library
+
+# Email Alerts
+email-validator>=2.1.0
+
+# Scheduling
+schedule>=1.2.0
+apscheduler>=3.10.0
+
+# Environment & Config
+python-dotenv>=1.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Timezone handling
+pytz>=2024.1
