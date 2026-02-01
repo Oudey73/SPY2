@@ -1,0 +1,86 @@
+[
+  {
+    "opp_id": "OPP-001",
+    "status": "logged",
+    "timestamp": "2025-04-10T14:30:00",
+    "opportunity": {
+      "symbol": "SPY",
+      "direction": "long",
+      "strategy": "bull_put_spread",
+      "score": 82,
+      "grade": "A+",
+      "signals": ["IBS extreme low", "RSI(3) oversold", "VIX elevated"]
+    },
+    "regime": {"regime": "trending_up", "confidence": 75},
+    "trade_plan": {"strategy": "bull_put_spread"},
+    "risk_decision": null,
+    "entry_price": null,
+    "exit_price": null,
+    "contracts": null,
+    "pnl": null,
+    "trade_id": null
+  },
+  {
+    "opp_id": "OPP-002",
+    "status": "logged",
+    "timestamp": "2025-04-15T10:00:00",
+    "opportunity": {
+      "symbol": "SPY",
+      "direction": "short",
+      "strategy": "bear_call_spread",
+      "score": 71,
+      "grade": "A",
+      "signals": ["RSI(2) extreme high", "4 consecutive up days"]
+    },
+    "regime": {"regime": "range_bound", "confidence": 60},
+    "trade_plan": {"strategy": "bear_call_spread"},
+    "risk_decision": null,
+    "entry_price": null,
+    "exit_price": null,
+    "contracts": null,
+    "pnl": null,
+    "trade_id": null
+  },
+  {
+    "opp_id": "OPP-003",
+    "status": "logged",
+    "timestamp": "2025-05-01T09:35:00",
+    "opportunity": {
+      "symbol": "SPY",
+      "direction": "long",
+      "strategy": "bull_call_debit",
+      "score": 55,
+      "grade": "B",
+      "signals": ["IBS oversold", "Below 50-MA"]
+    },
+    "regime": {"regime": "trending_down", "confidence": 55},
+    "trade_plan": {"strategy": "bull_call_debit"},
+    "risk_decision": null,
+    "entry_price": null,
+    "exit_price": null,
+    "contracts": null,
+    "pnl": null,
+    "trade_id": null
+  },
+  {
+    "opp_id": "OPP-004",
+    "status": "logged",
+    "timestamp": "2025-06-10T11:00:00",
+    "opportunity": {
+      "symbol": "SPY",
+      "direction": "neutral",
+      "strategy": "iron_condor",
+      "score": 60,
+      "grade": "B",
+      "signals": ["Range bound regime", "IV rank elevated"]
+    },
+    "regime": {"regime": "range_bound", "confidence": 70},
+    "trade_plan": {"strategy": "iron_condor"},
+    "risk_decision": null,
+    "entry_price": null,
+    "exit_price": null,
+    "contracts": null,
+    "pnl": null,
+    "trade_id": null
+  }
+]
