@@ -30,6 +30,19 @@ from signals.iv_signal_detector import IVSignalDetector
 from alerts.email_alert import EmailAlertSystem
 from alerts.telegram_alert import TelegramAlertSystem
 
+# New modules
+from analysis.regime_classifier import RegimeClassifier, RegimeType
+from analysis.liquidity_checker import LiquidityChecker
+from strategy.strategy_selector import StrategySelector, StrategyType
+from strategy.position_sizer import PositionSizer
+from strategy.trade_builder import TradeBuilder
+from risk.risk_manager import RiskManager
+from risk.event_risk import EventRiskChecker
+from risk.greeks_monitor import GreeksMonitor
+from execution.trade_logger import TradeLogger
+from execution.performance_tracker import PerformanceTracker
+import config
+
 # Configure logging
 logger.remove()
 logger.add(
@@ -66,6 +79,9 @@ class SPYOpportunityAgent:
         self.min_score = min_score
         self.scan_interval = scan_interval_minutes
 
+        # Account value from env or config
+        self.account_value = float(os.getenv("ACCOUNT_VALUE", config.ACCOUNT["value"]))
+
         # Initialize components
         logger.info("Initializing SPY Opportunity Agent...")
         self.yahoo = YahooCollector()
@@ -76,6 +92,18 @@ class SPYOpportunityAgent:
         self.scorer = SPYOpportunityScorer(min_score_threshold=min_score)
         self.email = EmailAlertSystem()
         self.telegram = TelegramAlertSystem()
+
+        # New pipeline components
+        self.regime_classifier = RegimeClassifier(yahoo_collector=self.yahoo)
+        self.liquidity_checker = LiquidityChecker()
+        self.strategy_selector = StrategySelector()
+        self.position_sizer = PositionSizer()
+        self.trade_builder = TradeBuilder()
+        self.risk_manager = RiskManager(account_value=self.account_value)
+        self.event_checker = EventRiskChecker()
+        self.greeks_monitor = GreeksMonitor()
+        self.trade_logger = TradeLogger()
+        self.performance_tracker = PerformanceTracker()
 
         # State tracking
         self.running = False
@@ -158,6 +186,7 @@ class SPYOpportunityAgent:
                 "rsi_14": technicals["rsi"]["rsi_14"],
                 "vix": technicals["vix"]["vix"] if technicals.get("vix") else None,
                 "vix_10_ma": technicals["vix"]["vix_10_ma"] if technicals.get("vix") else None,
+                "sma_20": technicals["moving_averages"]["sma_20"],
                 "sma_50": technicals["moving_averages"]["sma_50"],
                 "sma_200": technicals["moving_averages"]["sma_200"],
                 "change_percent": technicals["price"]["change_percent"],
@@ -277,13 +306,123 @@ class SPYOpportunityAgent:
 
         logger.info(f"Opportunity: {opportunity.direction.value.upper()} Score={opportunity.score} Grade={opportunity.grade.value}")
 
+        # === Extended Pipeline: Regime -> Strategy -> Risk -> Log ===
+        trade_plan = None
+        regime = None
+        strategy_rec = None
+        risk_decision = None
+
+        try:
+            # 1. Classify regime
+            regime = self.regime_classifier.classify(market_data)
+            logger.info(f"Regime: {regime.regime.value} (confidence {regime.confidence:.0f}%, bias={regime.bias})")
+
+            # 2. Check event risk
+            event_risk = self.event_checker.check()
+            if event_risk.events:
+                logger.info(f"Event risk: {', '.join(event_risk.events)} [{event_risk.risk_level}]")
+            if event_risk.blocked:
+                logger.warning(f"Trade blocked by event risk: {event_risk.recommendation}")
+
+            # 3. Build IV data dict for selectors
+            iv_dict = None
+            if market_data.get("iv_rank") is not None:
+                iv_dict = {
+                    "iv_rank": market_data.get("iv_rank"),
+                    "current_iv": market_data.get("current_iv"),
+                    "term_structure": market_data.get("term_structure"),
+                }
+
+            # 4. Select strategy
+            direction_bias = "bullish" if opportunity.direction.value == "long" else "bearish"
+            strategy_rec = self.strategy_selector.select(regime, iv_dict, direction_bias)
+            logger.info(f"Strategy: {strategy_rec.strategy.value} ({strategy_rec.reasoning[:80]})")
+
+            if strategy_rec.strategy != StrategyType.NO_TRADE:
+                # 5. Calculate position size
+                spread_width = 3.0  # default $3 wide spread
+                max_loss_per_contract = spread_width * 100
+                position_size = self.position_sizer.calculate(
+                    account_value=self.account_value,
+                    max_loss_per_contract=max_loss_per_contract,
+                    confidence=regime.confidence,
+                    regime_type=regime.regime,
+                )
+                logger.info(f"Position: {position_size.contracts} contracts (risk ${position_size.risk_per_trade:,.0f})")
+
+                # 6. Build trade plan
+                trade_plan = self.trade_builder.build(
+                    strategy=strategy_rec.strategy,
+                    price=market_data["price"],
+                    regime=regime,
+                    iv_data=iv_dict,
+                    position_size=position_size,
+                )
+
+                if trade_plan:
+                    # 7. Run risk manager
+                    open_positions = self.trade_logger.get_open_positions()
+                    risk_decision = self.risk_manager.evaluate_trade(
+                        trade_plan=trade_plan,
+                        regime=regime,
+                        iv_data=iv_dict,
+                        signals=signals,
+                        positions=open_positions,
+                        account_value=self.account_value,
+                    )
+                    logger.info(f"Risk decision: {'APPROVED' if risk_decision.approved else 'REJECTED'} (risk score {risk_decision.risk_score:.0f})")
+                    if risk_decision.adjustments:
+                        for adj in risk_decision.adjustments:
+                            logger.info(f"  Adjustment: {adj}")
+
+                    # 8. Log trade if approved
+                    if risk_decision.approved:
+                        trade_id = self.trade_logger.log_entry(
+                            trade_plan=trade_plan.to_dict(),
+                            regime=regime.to_dict(),
+                            iv_data=iv_dict,
+                            signals=[s.to_dict() for s in signals],
+                            risk_decision=risk_decision.to_dict(),
+                        )
+                        logger.info(f"Trade logged: {trade_id}")
+
+        except Exception as e:
+            logger.error(f"Extended pipeline error (non-fatal): {e}")
+            # Graceful fallback: existing pipeline still works
+
         # Send alert if warranted
         if self.should_alert(opportunity):
-            self.send_alert(opportunity)
+            if trade_plan and regime and risk_decision and risk_decision.approved:
+                self._send_trade_recommendation(opportunity, trade_plan, regime, risk_decision)
+            else:
+                self.send_alert(opportunity)
         else:
             logger.info(f"Score {opportunity.score} below threshold {self.min_score} or on cooldown")
 
         self.last_opportunity = opportunity
+
+    def _send_trade_recommendation(self, opportunity, trade_plan, regime, risk_decision):
+        """Send enriched trade recommendation with regime + strategy + risk info."""
+        logger.info(f"SENDING TRADE RECOMMENDATION: {trade_plan.strategy.value}")
+
+        # Print to console
+        print(opportunity.format_alert())
+
+        # Send enriched Telegram alert
+        if self.telegram.is_configured():
+            success = self.telegram.send_trade_recommendation(opportunity, trade_plan, regime)
+            if success:
+                logger.info("Telegram trade recommendation sent")
+                self.alert_count += 1
+                self.last_alert_time = datetime.now(timezone.utc)
+            else:
+                logger.error("Failed to send Telegram trade recommendation")
+        else:
+            logger.warning("Telegram not configured")
+
+        # Email fallback uses standard alert
+        if self.email.is_configured():
+            self.email.send_opportunity_alert(opportunity)
 
     def send_alert(self, opportunity: Opportunity):
         """Send alert for opportunity"""

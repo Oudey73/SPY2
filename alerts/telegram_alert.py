@@ -167,6 +167,71 @@ class TelegramAlertSystem:
 """
         return message.strip()
 
+    def send_trade_recommendation(self, opportunity, trade_plan, regime) -> bool:
+        """
+        Send a structured trade recommendation with strategy, regime, and legs.
+
+        Args:
+            opportunity: Opportunity object from scorer
+            trade_plan: TradePlan from trade builder
+            regime: MarketRegime from classifier
+
+        Returns:
+            True if sent successfully
+        """
+        alert_key = f"{opportunity.symbol}_{opportunity.direction.value}_rec"
+
+        if alert_key in self.sent_alerts:
+            elapsed = (datetime.utcnow() - self.sent_alerts[alert_key]).total_seconds() / 60
+            if elapsed < self.cooldown_minutes:
+                return False
+
+        direction_emoji = "🟢" if opportunity.direction.value == "long" else "🔴"
+        grade_emoji = {"A+": "🔥", "A": "⭐", "B": "👀", "C": "⚠️", "F": "🚫"}.get(opportunity.grade.value, "")
+
+        # Format legs
+        legs_text = ""
+        for leg in trade_plan.legs:
+            action = leg.action.value.upper()
+            opt_type = leg.option_type.value.upper()
+            legs_text += f"  • {action} {leg.quantity}x {opt_type} ${leg.strike:.0f} ({leg.expiration})\n"
+
+        # Regime info
+        regime_text = f"{regime.regime.value} (confidence {regime.confidence:.0f}%)"
+
+        # Risk info
+        max_loss_text = f"${trade_plan.max_loss:,.0f}" if trade_plan.max_loss else "N/A"
+
+        message = f"""
+{direction_emoji} <b>TRADE RECOMMENDATION: SPY {opportunity.direction.value.upper()}</b> {direction_emoji}
+
+📊 <b>Score:</b> {opportunity.score}/100 ({opportunity.grade.value}) {grade_emoji}
+
+🏷 <b>Strategy:</b> {trade_plan.strategy.value.replace('_', ' ').title()}
+📈 <b>Regime:</b> {regime_text}
+📅 <b>Expiration:</b> {trade_plan.expiration} ({trade_plan.dte} DTE)
+
+📋 <b>Legs:</b>
+{legs_text}
+💰 <b>Contracts:</b> {trade_plan.contracts}
+🛑 <b>Max Loss:</b> {max_loss_text}
+🎯 <b>Profit Target:</b> {trade_plan.profit_target_pct:.0f}% of max profit
+❌ <b>Stop Loss:</b> {trade_plan.stop_loss_pct:.0f}% of max loss
+
+📈 <b>Top Drivers:</b>
+""" + "\n".join([f"  • {d}" for d in opportunity.top_drivers[:3]])
+
+        if opportunity.warnings:
+            message += "\n\n⚠️ <b>Warnings:</b>\n" + "\n".join([f"  • {w}" for w in opportunity.warnings])
+
+        message += f"\n\n⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+        message += "\n\n<i>⚠️ Not financial advice. DYOR.</i>"
+
+        success = self.send_message(message.strip())
+        if success:
+            self.sent_alerts[alert_key] = datetime.utcnow()
+        return success
+
     def send_test_message(self) -> bool:
         """Send a test message to verify configuration"""
         message = """

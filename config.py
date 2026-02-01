@@ -117,3 +117,47 @@ TIMING = {
     "eod_scan_time": "15:55",      # End of day scan
     "heartbeat_hours": 8,          # Status update every 8 hours
 }
+
+# =============================================================================
+# ACCOUNT & POSITION SIZING
+# =============================================================================
+
+ACCOUNT = {
+    "value": float(os.getenv("ACCOUNT_VALUE", 100000)),  # Total account value
+}
+
+REGIME_CONFIG = {
+    "adx_period": 14,
+    "atr_short": 5,
+    "atr_long": 20,
+    "hh_hl_lookback": 10,
+    "vix_high_vol_threshold": 25,
+    "atr_ratio_high_vol": 1.5,
+    "iv_rank_high_vol": 70,
+    "adx_trending": 25,
+    "adx_ranging": 20,
+    "min_confidence": 60,  # below this -> TRANSITION
+}
+
+POSITION_SIZING = {
+    "max_contracts": 20,
+    "risk_pct_very_high": 0.03,   # 3% for A+ (confidence > 80)
+    "risk_pct_high": 0.02,        # 2% for A (confidence 65-80)
+    "risk_pct_moderate": 0.015,   # 1.5% for B (confidence 50-65)
+    "risk_pct_low": 0.01,         # 1% for C or below
+    "regime_mult_trending": 1.0,
+    "regime_mult_range": 0.85,
+    "regime_mult_high_vol": 0.5,
+    "regime_mult_transition": 0.5,
+}
+
+RISK_LIMITS = {
+    "max_daily_loss_pct": 0.03,       # 3% daily stop
+    "max_weekly_loss_pct": 0.05,      # 5% weekly stop
+    "max_correlated_positions": 3,
+    "delta_limit": 50,
+    "gamma_min": -10,
+    "theta_max_pct": 0.005,           # 0.5% of account per day
+    "vega_long_max": 100,
+    "vega_short_min": -50,
+}
