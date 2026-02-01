@@ -133,8 +133,11 @@ class TelegramAlertSystem:
         if opportunity.warnings:
             warnings_text = "\n\n⚠️ <b>Warnings:</b>\n" + "\n".join([f"  • {w}" for w in opportunity.warnings])
 
+        opp_id = getattr(opportunity, 'opp_id', '')
+        id_line = f"\n🆔 <b>ID:</b> {opp_id}" if opp_id else ""
+
         message = f"""
-{direction_emoji} <b>{opportunity.symbol} - {opportunity.direction.value.upper()}</b> {direction_emoji}
+{direction_emoji} <b>{opportunity.symbol} - {opportunity.direction.value.upper()}</b> {direction_emoji}{id_line}
 
 📊 <b>Score:</b> {opportunity.score}/100 ({opportunity.grade.value}) {grade_emoji}
 🎯 <b>Confidence:</b> {opportunity.confidence_level}
@@ -188,6 +191,7 @@ class TelegramAlertSystem:
 
         direction_emoji = "🟢" if opportunity.direction.value == "long" else "🔴"
         grade_emoji = {"A+": "🔥", "A": "⭐", "B": "👀", "C": "⚠️", "F": "🚫"}.get(opportunity.grade.value, "")
+        opp_id = getattr(opportunity, 'opp_id', '')
 
         # Format legs
         legs_text = ""
@@ -202,8 +206,10 @@ class TelegramAlertSystem:
         # Risk info
         max_loss_text = f"${trade_plan.max_loss:,.0f}" if trade_plan.max_loss else "N/A"
 
+        id_line = f"\n🆔 <b>ID:</b> {opp_id}" if opp_id else ""
+
         message = f"""
-{direction_emoji} <b>TRADE RECOMMENDATION: SPY {opportunity.direction.value.upper()}</b> {direction_emoji}
+{direction_emoji} <b>TRADE RECOMMENDATION: SPY {opportunity.direction.value.upper()}</b> {direction_emoji}{id_line}
 
 📊 <b>Score:</b> {opportunity.score}/100 ({opportunity.grade.value}) {grade_emoji}
 

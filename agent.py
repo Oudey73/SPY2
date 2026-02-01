@@ -41,6 +41,7 @@ from risk.event_risk import EventRiskChecker
 from risk.greeks_monitor import GreeksMonitor
 from execution.trade_logger import TradeLogger
 from execution.performance_tracker import PerformanceTracker
+from execution.opportunity_logger import OpportunityLogger
 import config
 
 # Configure logging
@@ -104,6 +105,7 @@ class SPYOpportunityAgent:
         self.greeks_monitor = GreeksMonitor()
         self.trade_logger = TradeLogger()
         self.performance_tracker = PerformanceTracker()
+        self.opp_logger = OpportunityLogger(trade_logger=self.trade_logger)
 
         # State tracking
         self.running = False
@@ -304,7 +306,7 @@ class SPYOpportunityAgent:
             logger.info("No clear opportunity")
             return
 
-        logger.info(f"Opportunity: {opportunity.direction.value.upper()} Score={opportunity.score} Grade={opportunity.grade.value}")
+        logger.info(f"Opportunity: {opportunity.direction.value.upper()} Score={opportunity.score} Grade={opportunity.grade.value} ID={opportunity.opp_id}")
 
         # === Extended Pipeline: Regime -> Strategy -> Risk -> Log ===
         trade_plan = None
@@ -389,6 +391,14 @@ class SPYOpportunityAgent:
         except Exception as e:
             logger.error(f"Extended pipeline error (non-fatal): {e}")
             # Graceful fallback: existing pipeline still works
+
+        # Log every opportunity regardless of approval
+        self.opp_logger.log(
+            opportunity_dict=opportunity.to_dict(),
+            regime_dict=regime.to_dict() if regime else None,
+            trade_plan_dict=trade_plan.to_dict() if trade_plan else None,
+            risk_decision_dict=risk_decision.to_dict() if risk_decision else None,
+        )
 
         # Send alert if warranted
         if self.should_alert(opportunity):

@@ -3,9 +3,10 @@ Opportunity Scoring Engine for SPY
 Combines signals into actionable opportunities with confidence scores
 Based on backtested strategy performance
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import pytz
+import uuid
 from typing import Dict, List, Optional
 from enum import Enum
 from .signal_detector import Signal, SignalType, Direction
@@ -48,9 +49,11 @@ class Opportunity:
     warnings: List[str]
     vix_filter_passed: bool
     timestamp: str
+    opp_id: str = ""
 
     def to_dict(self) -> dict:
         return {
+            "opp_id": self.opp_id,
             "symbol": self.symbol,
             "direction": self.direction.value,
             "score": self.score,
@@ -80,6 +83,7 @@ class Opportunity:
 {'='*50}
 {direction_emoji} SPY - {self.direction.value.upper()} OPPORTUNITY
 {'='*50}
+🆔 ID: {self.opp_id}
 
 📊 SCORE: {self.score}/100 ({self.grade.value}) {grade_emoji.get(self.grade.value, '')}
 🎯 CONFIDENCE: {self.confidence_level}
@@ -457,6 +461,8 @@ class SPYOpportunityScorer:
         # Position size suggestion
         position_size = self.suggest_position_size(score, vix_passed)
 
+        opp_id = f"OPP-{uuid.uuid4().hex[:4]}"
+
         return Opportunity(
             symbol="SPY",
             direction=direction,
@@ -474,7 +480,8 @@ class SPYOpportunityScorer:
             recommended_dte=self.suggest_option_dte(score, 5),
             warnings=warnings,
             vix_filter_passed=vix_passed,
-            timestamp=now_saudi()
+            timestamp=now_saudi(),
+            opp_id=opp_id
         )
 
 
