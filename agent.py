@@ -24,9 +24,11 @@ load_dotenv()
 from collectors.yahoo_collector import YahooCollector
 from collectors.polygon_collector import PolygonCollector
 from collectors.orats_collector import ORATSCollector
+from collectors.enhanced_data_collector import EnhancedDataCollector
 from signals.signal_detector import SPYSignalDetector
-from signals.opportunity_scorer import SPYOpportunityScorer, Opportunity
+from signals.opportunity_scorer import SPYOpportunityScorer, Opportunity, EnhancedScoringResult
 from signals.iv_signal_detector import IVSignalDetector
+from signals.exit_monitor import ExitMonitor, ExitAlert, AlertType
 from alerts.email_alert import EmailAlertSystem
 from alerts.telegram_alert import TelegramAlertSystem
 
@@ -106,6 +108,13 @@ class SPYOpportunityAgent:
         self.trade_logger = TradeLogger()
         self.performance_tracker = PerformanceTracker()
         self.opp_logger = OpportunityLogger(trade_logger=self.trade_logger)
+
+        # Enhanced scoring components (share polygon instance for CVD)
+        self.enhanced_collector = EnhancedDataCollector(polygon_collector=self.polygon)
+        self.exit_monitor = ExitMonitor(
+            bars_for_partial=config.EXIT_MONITOR.get("bars_for_partial", 3),
+            bars_for_full_exit=config.EXIT_MONITOR.get("bars_for_full_exit", 5),
+        )
 
         # State tracking
         self.running = False
@@ -227,6 +236,10 @@ class SPYOpportunityAgent:
                     market_data["put_skew"] = skew_data.get("put_skew")
                     market_data["iv_strategy_recommendation"] = orats_data.get("strategy_recommendation")
 
+            # Add enhanced data for multi-factor scoring
+            enhanced_data = self.enhanced_collector.get_all_enhanced_data()
+            market_data["enhanced"] = enhanced_data
+
             return market_data
 
         except Exception as e:
@@ -299,14 +312,42 @@ class SPYOpportunityAgent:
         for s in signals:
             logger.info(f"  [{s.tier}] {s.signal_type.value}: {s.direction.value.upper()} ({s.strength})")
 
-        # Score opportunity
+        # Score opportunity (basic scoring)
         opportunity = self.scorer.score_opportunity(signals, market_data["price"])
 
         if not opportunity:
             logger.info("No clear opportunity")
+            # Still check exit conditions for tracked positions
+            self._check_exit_conditions(market_data["price"])
             return
 
+        # Apply enhanced scoring if enabled
+        enhanced_result = None
+        if config.ENHANCED_SCORING.get("enabled", True):
+            enhanced_data = market_data.get("enhanced", {})
+            enhanced_result = self.scorer.calculate_enhanced_score(
+                signals=signals,
+                enhanced_data=enhanced_data,
+                market_data=market_data
+            )
+            if enhanced_result:
+                # Update opportunity with enhanced scoring
+                opportunity.enhanced_result = enhanced_result
+                opportunity.score = enhanced_result.final_score
+                opportunity.grade = self.scorer.get_grade(enhanced_result.final_score)
+                # Update position size suggestion with Kelly-based size
+                kelly_pct = enhanced_result.dynamic_position_size * 100
+                opportunity.position_size_suggestion = f"{kelly_pct:.1f}% of portfolio (Kelly-based, grade {enhanced_result.confidence_grade})"
+
+                # Log enhanced scoring breakdown
+                logger.info(f"Enhanced Scoring: {enhanced_result.base_score} -> {enhanced_result.final_score} ({enhanced_result.confidence_grade})")
+                for line in enhanced_result.logic_breakdown:
+                    logger.info(f"  {line}")
+
         logger.info(f"Opportunity: {opportunity.direction.value.upper()} Score={opportunity.score} Grade={opportunity.grade.value} ID={opportunity.opp_id}")
+
+        # Check exit conditions for tracked positions
+        self._check_exit_conditions(market_data["price"])
 
         # === Extended Pipeline: Regime -> Strategy -> Risk -> Log ===
         trade_plan = None
@@ -460,6 +501,59 @@ class SPYOpportunityAgent:
                 logger.info("✅ Email alert sent successfully")
             else:
                 logger.error("❌ Failed to send email alert")
+
+    def register_position(self, opportunity: Opportunity):
+        """
+        Register an opportunity as a position for exit monitoring.
+
+        Call this after a trade is entered to start tracking for exit alerts.
+
+        Args:
+            opportunity: The opportunity that was traded
+        """
+        self.exit_monitor.register_entry(
+            opp_id=opportunity.opp_id,
+            entry_price=opportunity.entry_zone.get("target", opportunity.entry_zone.get("aggressive")),
+            direction=opportunity.direction.value,
+            stop_loss=opportunity.stop_loss,
+            targets=opportunity.targets,
+        )
+        logger.info(f"Registered position for exit monitoring: {opportunity.opp_id}")
+
+    def _check_exit_conditions(self, current_price: float):
+        """
+        Check exit conditions for all tracked positions.
+
+        Args:
+            current_price: Current market price
+        """
+        if self.exit_monitor.get_position_count() == 0:
+            return
+
+        alerts = self.exit_monitor.check_all_positions(current_price)
+
+        for alert in alerts:
+            logger.info(f"Exit Alert: {alert.opp_id} - {alert.alert_type.value} ({alert.exit_percentage}%)")
+            logger.info(f"  Reason: {alert.reason}")
+            logger.info(f"  P&L: {alert.pnl_percent:+.2f}% after {alert.bars_held} bars")
+            self._send_exit_alert(alert)
+
+    def _send_exit_alert(self, alert: ExitAlert):
+        """
+        Send an exit alert via configured channels.
+
+        Args:
+            alert: ExitAlert object with exit details
+        """
+        logger.info(f"🚨 SENDING EXIT ALERT: {alert.opp_id} ({alert.alert_type.value})")
+
+        # Send Telegram exit alert
+        if self.telegram.is_configured():
+            success = self.telegram.send_exit_alert(alert)
+            if success:
+                logger.info("✅ Telegram exit alert sent")
+            else:
+                logger.error("❌ Failed to send Telegram exit alert")
 
     def start(self):
         """Start the monitoring agent"""

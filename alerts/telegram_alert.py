@@ -266,6 +266,53 @@ You will receive alerts when high-conviction opportunities are detected.
 """
         return self.send_message(message)
 
+    def send_exit_alert(self, alert) -> bool:
+        """
+        Send an exit alert for a tracked position.
+
+        Args:
+            alert: ExitAlert object with exit details
+
+        Returns:
+            True if sent successfully
+        """
+        # Determine alert emoji and urgency based on type
+        alert_type = alert.alert_type.value if hasattr(alert.alert_type, 'value') else str(alert.alert_type)
+
+        type_config = {
+            "partial_exit": ("💰", "PARTIAL EXIT", "Take profits on 50%"),
+            "full_exit": ("🚨", "FULL EXIT", "Close entire position"),
+            "stop_loss": ("🛑", "STOP LOSS", "Stop loss triggered"),
+            "target_hit": ("🎯", "TARGET HIT", "Profit target reached"),
+        }
+
+        emoji, title, action = type_config.get(
+            alert_type,
+            ("⚠️", "EXIT ALERT", "Review position")
+        )
+
+        # P&L indicator
+        pnl_emoji = "🟢" if alert.pnl_percent >= 0 else "🔴"
+
+        message = f"""
+{emoji} <b>{title}: SPY</b> {emoji}
+
+🆔 <b>ID:</b> {alert.opp_id}
+📊 <b>Action:</b> {action} ({alert.exit_percentage}%)
+
+💵 <b>Entry:</b> ${alert.entry_price:,.2f}
+📈 <b>Current:</b> ${alert.current_price:,.2f}
+{pnl_emoji} <b>P&L:</b> {alert.pnl_percent:+.2f}%
+
+📊 <b>Bars Held:</b> {alert.bars_held}
+📝 <b>Reason:</b> {html.escape(alert.reason)}
+
+⏰ {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}
+
+<i>⚠️ Review and take appropriate action.</i>
+"""
+        return self.send_message(message.strip())
+
 
 def test_telegram_alerts():
     """Test the Telegram alert system"""

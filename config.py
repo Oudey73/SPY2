@@ -161,3 +161,50 @@ RISK_LIMITS = {
     "vega_long_max": 100,
     "vega_short_min": -50,
 }
+
+# =============================================================================
+# ENHANCED SCORING CONFIGURATION
+# =============================================================================
+
+ENHANCED_SCORING = {
+    "enabled": True,                    # Enable multi-factor scoring system
+
+    # Kill switch multipliers
+    "session_multiplier": 0.6,          # Multiplier for trades outside HP sessions
+    "rvol_threshold": 1.2,              # RVOL below this triggers 0.5x multiplier
+    "rvol_multiplier": 0.5,             # Multiplier for low RVOL mean reversion
+
+    # Penalties
+    "dxy_conflict_penalty": 20,         # Points deducted for DXY trend conflict
+
+    # Bonuses
+    "truth_bonus": 25,                  # Bonus for IBS < 0.2 + positive CVD (LONG)
+
+    # Kelly Criterion parameters by grade (win_rate, profit_loss_ratio)
+    "kelly_params": {
+        "A+": (0.75, 1.5),
+        "A": (0.70, 1.3),
+        "B+": (0.65, 1.2),
+        "B": (0.60, 1.2),
+        "C": (0.50, 1.0),
+        "F": (0.40, 1.0),
+    },
+    "max_kelly_position": 0.05,         # 5% maximum position size
+    "use_half_kelly": True,             # Use half-Kelly for safety
+}
+
+# =============================================================================
+# EXIT MONITOR CONFIGURATION
+# =============================================================================
+
+EXIT_MONITOR = {
+    "bars_for_partial": 3,              # Bars after which to take 50% profit if profitable
+    "bars_for_full_exit": 5,            # Bars after which to exit 100% if not profitable
+    "profit_threshold_pct": 0.0,        # Minimum profit % to count as "profitable"
+
+    # Exit alerts
+    "alert_on_partial": True,           # Send alert on partial exit signal
+    "alert_on_full_exit": True,         # Send alert on full exit signal
+    "alert_on_stop_loss": True,         # Send alert on stop loss
+    "alert_on_target": True,            # Send alert on target hit
+}

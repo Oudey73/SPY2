@@ -1,18 +1,43 @@
 """
 Polygon.io Data Collector
-Fetches: Real-time quotes, options data, aggregates
+Fetches: Real-time quotes, options data, aggregates, tick-level trades
 Requires API key ($29/mo for real-time, free tier is delayed)
+
+CVD (Cumulative Volume Delta) calculation:
+- Fetches tick-level trades
+- Classifies as buy/sell based on trade conditions and price vs bid/ask
+- Calculates cumulative delta and slope
 """
 import os
 import requests
+import numpy as np
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from loguru import logger
 from dotenv import load_dotenv
 
 load_dotenv()
 
 POLYGON_BASE = "https://api.polygon.io"
+
+# Polygon trade condition codes that indicate buy/sell
+# See: https://polygon.io/docs/stocks/get_v3_trades__stocksticker
+# These are SIP condition codes
+BUY_CONDITIONS = {
+    'B',   # Buy side
+    'W',   # Weighted average price trade (often institutional buy)
+}
+SELL_CONDITIONS = {
+    'S',   # Sell side
+    'T',   # Form T trade (after hours, often selling)
+}
+# Conditions that indicate we should use price vs quote to determine side
+NEUTRAL_CONDITIONS = {
+    '@',   # Regular trade
+    'F',   # Intermarket sweep
+    'I',   # Odd lot trade
+    'X',   # Cross trade
+}
 
 
 class PolygonCollector:
@@ -299,6 +324,327 @@ class PolygonCollector:
                 "server_time": data.get("serverTime"),
                 "is_market_open": data.get("market") == "open",
             }
+        return None
+
+    def get_trades(
+        self,
+        symbol: str = "SPY",
+        timestamp_gte: int = None,
+        timestamp_lte: int = None,
+        limit: int = 5000,
+        order: str = "asc"
+    ) -> Optional[List[Dict]]:
+        """
+        Get tick-level trades for CVD calculation.
+
+        Args:
+            symbol: Stock symbol
+            timestamp_gte: Start timestamp in nanoseconds (Unix epoch * 1e9)
+            timestamp_lte: End timestamp in nanoseconds
+            limit: Max number of trades (max 50000)
+            order: "asc" or "desc"
+
+        Returns:
+            List of trade dicts with: price, size, timestamp, conditions
+        """
+        endpoint = f"/v3/trades/{symbol}"
+        params = {
+            "limit": min(limit, 50000),
+            "order": order,
+        }
+
+        if timestamp_gte:
+            params["timestamp.gte"] = timestamp_gte
+        if timestamp_lte:
+            params["timestamp.lte"] = timestamp_lte
+
+        data = self._request(endpoint, params)
+
+        if data and data.get("results"):
+            return [{
+                "price": r.get("price"),
+                "size": r.get("size"),
+                "timestamp": r.get("sip_timestamp"),
+                "conditions": r.get("conditions", []),
+                "exchange": r.get("exchange"),
+            } for r in data["results"]]
+
+        return None
+
+    def get_nbbo_quote(self, symbol: str = "SPY") -> Optional[Dict]:
+        """
+        Get current NBBO (National Best Bid/Offer) for trade classification.
+
+        Returns:
+            Dict with bid, ask, bid_size, ask_size
+        """
+        endpoint = f"/v3/quotes/{symbol}"
+        data = self._request(endpoint, {"limit": 1, "order": "desc"})
+
+        if data and data.get("results") and len(data["results"]) > 0:
+            quote = data["results"][0]
+            return {
+                "bid": quote.get("bid_price"),
+                "ask": quote.get("ask_price"),
+                "bid_size": quote.get("bid_size"),
+                "ask_size": quote.get("ask_size"),
+                "timestamp": quote.get("sip_timestamp"),
+            }
+        return None
+
+    def classify_trade(
+        self,
+        trade: Dict,
+        bid: float = None,
+        ask: float = None
+    ) -> str:
+        """
+        Classify a trade as 'buy', 'sell', or 'neutral'.
+
+        Classification logic:
+        1. Check trade conditions for explicit buy/sell indicators
+        2. If neutral conditions, use price vs bid/ask midpoint
+           - Price >= ask: likely buy (aggressive buyer)
+           - Price <= bid: likely sell (aggressive seller)
+           - Price near mid: neutral
+
+        Args:
+            trade: Trade dict with price, conditions
+            bid: Current bid price
+            ask: Current ask price
+
+        Returns:
+            'buy', 'sell', or 'neutral'
+        """
+        conditions = trade.get("conditions", [])
+        price = trade.get("price", 0)
+
+        # Check explicit conditions first
+        for cond in conditions:
+            if cond in BUY_CONDITIONS:
+                return "buy"
+            if cond in SELL_CONDITIONS:
+                return "sell"
+
+        # Use price vs bid/ask if available
+        if bid and ask and bid > 0 and ask > 0:
+            mid = (bid + ask) / 2
+            spread = ask - bid
+
+            # If spread is very tight, need price at/above ask for buy
+            if spread < 0.02:  # Tight spread
+                if price >= ask:
+                    return "buy"
+                elif price <= bid:
+                    return "sell"
+            else:
+                # Wider spread - use position relative to mid
+                if price >= mid + (spread * 0.25):
+                    return "buy"
+                elif price <= mid - (spread * 0.25):
+                    return "sell"
+
+        return "neutral"
+
+    def calculate_cvd(
+        self,
+        symbol: str = "SPY",
+        lookback_minutes: int = 30,
+        bar_size_minutes: int = 5
+    ) -> Optional[Dict]:
+        """
+        Calculate Cumulative Volume Delta (CVD) for a symbol.
+
+        CVD = Cumulative sum of (buy_volume - sell_volume)
+
+        A rising CVD indicates buying pressure.
+        A falling CVD indicates selling pressure.
+
+        Args:
+            symbol: Stock symbol
+            lookback_minutes: How far back to look (default 30 min)
+            bar_size_minutes: Bar size for aggregation (default 5 min)
+
+        Returns:
+            Dict with:
+            - cvd_values: List of CVD values per bar
+            - cvd_slope: Linear regression slope of CVD
+            - total_buy_volume: Total buy-classified volume
+            - total_sell_volume: Total sell-classified volume
+            - delta: Net delta (buy - sell)
+            - bars: Number of bars
+        """
+        if not self.api_key:
+            logger.warning("Polygon API key required for CVD calculation")
+            return None
+
+        try:
+            # Calculate timestamp range (nanoseconds)
+            now = datetime.utcnow()
+            start_time = now - timedelta(minutes=lookback_minutes)
+
+            # Convert to nanoseconds (Unix timestamp * 1e9)
+            timestamp_gte = int(start_time.timestamp() * 1e9)
+            timestamp_lte = int(now.timestamp() * 1e9)
+
+            # Get trades
+            trades = self.get_trades(
+                symbol=symbol,
+                timestamp_gte=timestamp_gte,
+                timestamp_lte=timestamp_lte,
+                limit=50000
+            )
+
+            if not trades or len(trades) < 10:
+                logger.warning(f"Insufficient trades for CVD: {len(trades) if trades else 0}")
+                return None
+
+            # Get current quote for trade classification
+            quote = self.get_nbbo_quote(symbol)
+            bid = quote.get("bid") if quote else None
+            ask = quote.get("ask") if quote else None
+
+            # Aggregate into bars
+            bar_ms = bar_size_minutes * 60 * 1000  # milliseconds
+            bars = {}
+
+            for trade in trades:
+                ts = trade.get("timestamp", 0)
+                if ts == 0:
+                    continue
+
+                # Convert nanoseconds to milliseconds and get bar key
+                ts_ms = ts // 1_000_000
+                bar_key = (ts_ms // bar_ms) * bar_ms
+
+                if bar_key not in bars:
+                    bars[bar_key] = {"buy_vol": 0, "sell_vol": 0, "neutral_vol": 0}
+
+                # Classify trade
+                side = self.classify_trade(trade, bid, ask)
+                size = trade.get("size", 0)
+
+                if side == "buy":
+                    bars[bar_key]["buy_vol"] += size
+                elif side == "sell":
+                    bars[bar_key]["sell_vol"] += size
+                else:
+                    bars[bar_key]["neutral_vol"] += size
+
+            if len(bars) < 2:
+                logger.warning("Not enough bars for CVD calculation")
+                return None
+
+            # Sort bars by timestamp
+            sorted_bars = sorted(bars.items())
+
+            # Calculate CVD for each bar
+            cvd_values = []
+            cumulative = 0
+            total_buy = 0
+            total_sell = 0
+
+            for bar_ts, bar_data in sorted_bars:
+                delta = bar_data["buy_vol"] - bar_data["sell_vol"]
+                cumulative += delta
+                cvd_values.append(cumulative)
+                total_buy += bar_data["buy_vol"]
+                total_sell += bar_data["sell_vol"]
+
+            # Calculate slope using numpy linear regression
+            if len(cvd_values) >= 2:
+                x = np.arange(len(cvd_values))
+                slope, intercept = np.polyfit(x, cvd_values, 1)
+            else:
+                slope = 0
+
+            # Normalize slope by average volume for comparability
+            avg_volume = (total_buy + total_sell) / max(len(sorted_bars), 1)
+            normalized_slope = slope / avg_volume if avg_volume > 0 else 0
+
+            return {
+                "cvd_values": cvd_values,
+                "cvd_current": cvd_values[-1] if cvd_values else 0,
+                "cvd_slope": round(slope, 2),
+                "cvd_slope_normalized": round(normalized_slope, 4),
+                "total_buy_volume": int(total_buy),
+                "total_sell_volume": int(total_sell),
+                "delta": int(total_buy - total_sell),
+                "buy_sell_ratio": round(total_buy / total_sell, 2) if total_sell > 0 else None,
+                "bars": len(sorted_bars),
+                "trades_analyzed": len(trades),
+                "lookback_minutes": lookback_minutes,
+                "interpretation": self._interpret_cvd(normalized_slope, total_buy, total_sell),
+            }
+
+        except Exception as e:
+            logger.error(f"Error calculating CVD: {e}")
+            return None
+
+    def _interpret_cvd(
+        self,
+        normalized_slope: float,
+        buy_vol: int,
+        sell_vol: int
+    ) -> str:
+        """
+        Interpret CVD results.
+
+        Args:
+            normalized_slope: CVD slope normalized by volume
+            buy_vol: Total buy volume
+            sell_vol: Total sell volume
+
+        Returns:
+            Human-readable interpretation
+        """
+        # Slope interpretation
+        if normalized_slope > 0.01:
+            slope_interp = "STRONG_BUYING"
+        elif normalized_slope > 0.005:
+            slope_interp = "MODERATE_BUYING"
+        elif normalized_slope > 0:
+            slope_interp = "SLIGHT_BUYING"
+        elif normalized_slope > -0.005:
+            slope_interp = "SLIGHT_SELLING"
+        elif normalized_slope > -0.01:
+            slope_interp = "MODERATE_SELLING"
+        else:
+            slope_interp = "STRONG_SELLING"
+
+        # Volume imbalance
+        if buy_vol > 0 and sell_vol > 0:
+            ratio = buy_vol / sell_vol
+            if ratio > 1.2:
+                vol_interp = "buyers dominant"
+            elif ratio < 0.8:
+                vol_interp = "sellers dominant"
+            else:
+                vol_interp = "balanced"
+        else:
+            vol_interp = "unknown"
+
+        return f"{slope_interp} ({vol_interp})"
+
+    def get_cvd_slope(self, symbol: str = "SPY", periods: int = 5) -> Optional[float]:
+        """
+        Get just the CVD slope value (convenience method).
+
+        Args:
+            symbol: Stock symbol
+            periods: Number of 5-min periods to analyze
+
+        Returns:
+            Normalized CVD slope, or None if unavailable
+        """
+        cvd_data = self.calculate_cvd(
+            symbol=symbol,
+            lookback_minutes=periods * 5,
+            bar_size_minutes=5
+        )
+
+        if cvd_data:
+            return cvd_data.get("cvd_slope_normalized")
         return None
 
     def get_all_spy_data(self) -> Dict:
