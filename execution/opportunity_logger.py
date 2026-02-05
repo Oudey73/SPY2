@@ -5,6 +5,7 @@ Bridges to TradeLogger for active position tracking.
 """
 import json
 import os
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional
 from loguru import logger
@@ -32,12 +33,34 @@ class OpportunityLogger:
         try:
             with open(self.log_path, "r") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
+        except json.JSONDecodeError:
+            logger.critical(f"CORRUPT opportunities file: {self.log_path}")
+            backup = self.log_path + ".bak"
+            if os.path.exists(backup):
+                logger.info(f"Recovering from backup: {backup}")
+                try:
+                    with open(backup, "r") as f:
+                        return json.load(f)
+                except (json.JSONDecodeError, FileNotFoundError):
+                    pass
+            logger.critical("No valid backup — returning empty list (DATA LOSS)")
+            return []
+        except FileNotFoundError:
             return []
 
     def _save(self, entries: List[Dict]):
-        with open(self.log_path, "w") as f:
+        # Backup current file before overwriting
+        if os.path.exists(self.log_path):
+            backup = self.log_path + ".bak"
+            try:
+                shutil.copy2(self.log_path, backup)
+            except Exception:
+                pass
+        # Atomic write: write to temp file, then replace
+        tmp = self.log_path + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(entries, f, indent=2, default=str)
+        os.replace(tmp, self.log_path)
 
     def log(
         self,

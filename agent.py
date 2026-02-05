@@ -317,6 +317,8 @@ class SPYOpportunityAgent:
 
         if not opportunity:
             logger.info("No clear opportunity")
+            # Send scan summary even with no opportunity
+            self._send_scan_summary(market_data, signals, None, None, None)
             # Still check exit conditions for tracked positions
             self._check_exit_conditions(market_data["price"])
             return
@@ -433,22 +435,29 @@ class SPYOpportunityAgent:
             logger.error(f"Extended pipeline error (non-fatal): {e}")
             # Graceful fallback: existing pipeline still works
 
-        # Log every opportunity regardless of approval
-        self.opp_logger.log(
-            opportunity_dict=opportunity.to_dict(),
-            regime_dict=regime.to_dict() if regime else None,
-            trade_plan_dict=trade_plan.to_dict() if trade_plan else None,
-            risk_decision_dict=risk_decision.to_dict() if risk_decision else None,
-        )
+        # Log opportunity (isolated — failure must not block alerts)
+        try:
+            self.opp_logger.log(
+                opportunity_dict=opportunity.to_dict(),
+                regime_dict=regime.to_dict() if regime else None,
+                trade_plan_dict=trade_plan.to_dict() if trade_plan else None,
+                risk_decision_dict=risk_decision.to_dict() if risk_decision else None,
+            )
+        except Exception as e:
+            logger.error(f"Failed to persist opportunity {opportunity.opp_id}: {e}")
 
-        # Send alert if warranted
-        if self.should_alert(opportunity):
-            if trade_plan and regime and risk_decision and risk_decision.approved:
-                self._send_trade_recommendation(opportunity, trade_plan, regime, risk_decision)
+        # Send alert (isolated — failure must not block state tracking)
+        try:
+            if self.should_alert(opportunity):
+                if trade_plan and regime and risk_decision and risk_decision.approved:
+                    self._send_trade_recommendation(opportunity, trade_plan, regime, risk_decision)
+                else:
+                    self.send_alert(opportunity)
             else:
-                self.send_alert(opportunity)
-        else:
-            logger.info(f"Score {opportunity.score} below threshold {self.min_score} or on cooldown")
+                logger.info(f"Score {opportunity.score} below threshold {self.min_score} or on cooldown")
+                self._send_scan_summary(market_data, signals, opportunity, regime, enhanced_result)
+        except Exception as e:
+            logger.error(f"Failed to send alert for {opportunity.opp_id}: {e}")
 
         self.last_opportunity = opportunity
 
@@ -537,6 +546,34 @@ class SPYOpportunityAgent:
             logger.info(f"  Reason: {alert.reason}")
             logger.info(f"  P&L: {alert.pnl_percent:+.2f}% after {alert.bars_held} bars")
             self._send_exit_alert(alert)
+
+    def _send_scan_summary(self, market_data: dict, signals: list, opportunity=None, regime=None, enhanced_result=None):
+        """
+        Send scan summary to Telegram for visibility into every scan.
+        """
+        if not self.telegram.is_configured():
+            return
+
+        try:
+            # Get IV signals if detector is configured
+            iv_signals = None
+            if self.iv_detector.is_configured():
+                iv_signals = self.iv_detector.detect_iv_signals("SPY")
+
+            success = self.telegram.send_scan_summary(
+                market_data=market_data,
+                signals=signals,
+                opportunity=opportunity,
+                regime=regime,
+                enhanced_result=enhanced_result,
+                iv_signals=iv_signals
+            )
+            if success:
+                logger.info("Scan summary sent to Telegram")
+            else:
+                logger.warning("Failed to send scan summary")
+        except Exception as e:
+            logger.error(f"Error sending scan summary: {e}")
 
     def _send_exit_alert(self, alert: ExitAlert):
         """
